@@ -20,10 +20,8 @@ pipeline:
       - make lint
       - git --version
       - make test
-      - curl -sL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz
-      - curl -s https://codeload.github.com/git/git/tar.gz/v1.7.0
       - mkdir build \
-        && curl -fsSL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz \
+        && curl -sL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz \
         && tar -C build -xzf git.tar.gz \
         && cd build/git-1.7.0 \
         && chmod +x configure \
