@@ -17,6 +17,7 @@ pipeline:
       - make clean
       - make vet
       - make lint
+      - git --version
       - make test
       - mkdir build \
         && curl -fsSL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz \
@@ -29,6 +30,7 @@ pipeline:
         && cd ../.. \
         && rm -rf build \
         && rm git.tar.gz
+      - git --version
       - make test
       - make build
 
