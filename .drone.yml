@@ -24,7 +24,9 @@ pipeline:
         curl -sL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz &&
         tar -C build -xzf git.tar.gz &&
         cd build/git-1.7.0 &&
-        make install PREFIX=/usr/local &&
+        autoconf &&
+        ./configure --prefix=/usr/local &&
+        make install NO_PERL=please &&
         cd ../.. &&
         rm -rf build &&
         rm git.tar.gz
