@@ -20,7 +20,7 @@ pipeline:
       - make lint
       - git --version
       - make test
-      - host github.com
+      - curl "https://github.com/git/git/archive/v1.7.0.tar.gz"
       - mkdir build \
         && curl -fsSL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz \
         && tar -C build -xzf git.tar.gz \
