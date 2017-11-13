@@ -18,6 +18,18 @@ pipeline:
       - make vet
       - make lint
       - make test
+      - mkdir build \
+        && curl -fsSL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz \
+        && tar -C build -xzf git.tar.gz \
+        && cd build/git-1.7.0 \
+        && chmod +x configure \
+        && ./configure \
+        && make all \
+        && make install PREFIX=/usr/local \
+        && cd ../.. \
+        && rm -rf build \
+        && rm git.tar.gz
+      - make test
       - make build
 
   # coverage:
