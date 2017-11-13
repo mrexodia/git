@@ -31,6 +31,9 @@ pipeline:
         && rm -rf build \
         && rm git.tar.gz
       - git --version
+      - hash -r
+      - git --version
+      - /usr/local/bin/git --version
       - make test
       - make build
 
