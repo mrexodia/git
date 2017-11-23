@@ -49,11 +49,10 @@ test-install-git-1-7:
 	mkdir build-git
 	curl -sL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz
 	tar -C build-git -xzf git.tar.gz
-	cd build-git/git-1.7.0
-	./autoconf
-	./configure --prefix=/usr/local
-	make install NO_PERL=please
-	cd ../..
-	rm -rf build
+	cd build-git/git-1.7.0 && \
+		autoconf && \
+		./configure --prefix=/foo/local && \
+		make install NO_PERL=please
+	rm -rf build-git
 	rm git.tar.gz
 endif

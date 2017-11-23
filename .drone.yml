@@ -26,11 +26,14 @@ pipeline:
     image: webhippie/golang:edge
     pull: true
     environment:
-      - GITEA_GIT_PATH="/usr/local/bin/git"
+      - GITEA_GIT_PATH="/foo/local/bin/git"
     commands:
       - git update-ref refs/heads/test HEAD
+      - apk update
+      - apk add autoconf zlib-dev tcl
+      - mkdir -p /foo/local
       - make test-install-git-1-7
-      - /usr/local/bin/git --version
+      - /foo/local/bin/git --version
       - make clean
       - make vet
       - make lint
