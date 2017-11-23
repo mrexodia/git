@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -32,10 +33,17 @@ func (c *Command) String() string {
 	return fmt.Sprintf("%s %s", c.name, strings.Join(c.args, " "))
 }
 
+func gitCommand() string {
+	if gitPath, ok := os.LookupEnv("GITEA_GIT_PATH"); ok {
+		return gitPath
+	}
+	return "git"
+}
+
 // NewCommand creates and returns a new Git Command based on given command and arguments.
 func NewCommand(args ...string) *Command {
 	return &Command{
-		name: "git",
+		name: gitCommand(),
 		args: append(GlobalCommandArgs, args...),
 	}
 }

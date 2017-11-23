@@ -42,3 +42,18 @@ bench:
 .PHONY: build
 build:
 	go build .
+
+ifeq ($(CI), drone)
+.PHONY: test-install-git-1-7
+test-install-git-1-7:
+	mkdir build-git
+	curl -sL "https://github.com/git/git/archive/v1.7.0.tar.gz" -o git.tar.gz
+	tar -C build-git -xzf git.tar.gz
+	cd build-git/git-1.7.0
+	./autoconf
+	./configure --prefix=/usr/local
+	make install NO_PERL=please
+	cd ../..
+	rm -rf build
+	rm git.tar.gz
+endif
