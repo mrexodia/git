@@ -743,7 +743,21 @@ static int apply_single_file_filter(const char *path, const char *src, size_t le
 	if (start_async(&async))
 		return 0;	/* error was already reported */
 
-	if (strbuf_read(&nbuf, async.out, 0) < 0) {
+	if (sink) {
+		char buf[65536];
+		ssize_t n;
+
+		/*
+		 * If the sink fails, keep reading so that the filter
+		 * is not killed by SIGPIPE and reports its own status.
+		 */
+		while ((n = xread(async.out, buf, sizeof(buf))) > 0)
+			conv_sink_write(sink, buf, n);
+		if (n < 0)
+			err = error(_("read from external filter '%s' failed"), cmd);
+		else if (sink->failed)
+			err = -1;
+	} else if (strbuf_read(&nbuf, async.out, 0) < 0) {
 		err = error(_("read from external filter '%s' failed"), cmd);
 	}
 	if (close(async.out)) {
@@ -753,12 +767,8 @@ static int apply_single_file_filter(const char *path, const char *src, size_t le
 		err = error(_("external filter '%s' failed"), cmd);
 	}
 
-	if (!err) {
-		if (sink)
-			err = conv_sink_write(sink, nbuf.buf, nbuf.len);
-		else
-			strbuf_swap(dst, &nbuf);
-	}
+	if (!err && !sink)
+		strbuf_swap(dst, &nbuf);
 	strbuf_release(&nbuf);
 	return !err;
 }

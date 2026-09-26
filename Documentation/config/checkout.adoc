@@ -54,8 +54,8 @@ well the parallel version performs.
 Only working tree writes done by checkout-like commands (e.g. checkout,
 switch, restore, reset, clone, checkout-index, merge) are affected;
 other users of smudge filters, such as `git cat-file --filters`,
-`git archive` or `git apply`, still buffer the output. Currently only
-long-running process filters (`filter.<driver>.process`) are streamed.
+`git archive` or `git apply`, still buffer the output. This applies to
+both `filter.<driver>.smudge` and `filter.<driver>.process` filters.
 If a filter fails after it has sent part of the content, the partial
 file is removed, and then, as without this setting, either the command
 dies (for a required filter) or the unfiltered content is written. The

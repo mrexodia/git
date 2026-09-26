@@ -160,7 +160,16 @@ static int stream_filter_output_enabled(const struct conv_attrs *ca)
 				 &enabled))
 		enabled = git_env_bool("GIT_TEST_CHECKOUT_STREAM_FILTER_OUTPUT", 0);
 
-	return enabled && classify_conv_attrs(ca) == CA_CLASS_INCORE_PROCESS;
+	if (!enabled)
+		return 0;
+
+	switch (classify_conv_attrs(ca)) {
+	case CA_CLASS_INCORE_PROCESS:
+	case CA_CLASS_INCORE_FILTER:
+		return 1;
+	default:
+		return 0;
+	}
 }
 
 /*

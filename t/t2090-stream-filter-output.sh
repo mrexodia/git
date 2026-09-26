@@ -223,6 +223,57 @@ do
 	'
 done
 
+test_expect_success 'setup single-file smudge filter' '
+	write_script "$TEST_ROOT/rot13-fail.sh" <<-\EOF &&
+	"$TEST_ROOT/rot13.sh" &&
+	exit 1
+	EOF
+	git config filter.single.smudge "\"$TEST_ROOT/rot13.sh\"" &&
+	git config filter.single.clean "\"$TEST_ROOT/rot13.sh\"" &&
+	git config filter.singlefail.smudge "\"$TEST_ROOT/rot13-fail.sh\"" &&
+	git config filter.singlefail.clean "\"$TEST_ROOT/rot13.sh\"" &&
+	cat >>.gitattributes <<-\EOF &&
+	*.s filter=single
+	fail.s filter=singlefail
+	EOF
+	git add .gitattributes &&
+	for size in $SIZES
+	do
+		add_raw size-$size.s raw-$size || return 1
+	done &&
+	add_raw fail.s raw-later.r &&
+	git commit -q -m single
+'
+
+for mode in false true
+do
+	test_expect_success "single-file filter: content is identical (stream=$mode)" '
+		checkout_with $mode size-*.s &&
+		for size in $SIZES
+		do
+			test_cmp_bin expect-$size size-$size.s || return 1
+		done &&
+		test-tool chmtime =+10 .git/index &&
+		git status --porcelain -- size-*.s >actual &&
+		test_must_be_empty actual
+	'
+
+	test_expect_success "single-file filter: optional filter exits non-zero (stream=$mode)" '
+		checkout_with $mode fail.s 2>err &&
+		test_grep "external filter .* failed" err &&
+		test_cmp_bin raw-later.r fail.s
+	'
+
+	test_expect_success "single-file filter: required filter exits non-zero (stream=$mode)" '
+		rm -f fail.s &&
+		test_must_fail git -c filter.singlefail.required=true \
+			-c checkout.streamFilterOutput=$mode \
+			checkout -- fail.s 2>err &&
+		test_grep "smudge filter singlefail failed" err &&
+		test_path_is_missing fail.s
+	'
+done
+
 # Print the peak resident set size, in KiB, of running the given command.
 max_rss_kb () {
 	case "$(uname -s)" in
@@ -250,8 +301,14 @@ test_expect_success TIME_RSS 'setup memory test' '
 		cd mem &&
 		git config filter.expand.process \
 			"test-tool rot13-filter --log=filter.log clean smudge" &&
-		echo "*.r filter=expand" >.gitattributes &&
+		git config filter.zeros.smudge \
+			"test-tool genzeros $((100 * 1024 * 1024))" &&
+		cat >.gitattributes <<-\EOF &&
+		*.r filter=expand
+		*.z filter=zeros
+		EOF
 		echo pointer >p &&
+		add_raw zeros-$((100 * 1024 * 1024)).z p &&
 		add_raw expand-$((100 * 1024 * 1024)).r p &&
 		add_raw expand-$((2 * 1024 * 1024 * 1024)).r p &&
 		git add .gitattributes &&
@@ -262,15 +319,18 @@ test_expect_success TIME_RSS 'setup memory test' '
 # Peak memory must not depend on the size of the smudged file when
 # streaming, and must when not, or the test would not prove anything.
 check_rss () {
-	size=$1 bound_kb=$2 &&
+	file=$1 size=$2 bound_kb=$3 &&
 	(
 		cd mem &&
 		for mode in true false
 		do
-			rm -f expand-$size.r &&
+			rm -f $file &&
 			kb=$(max_rss_kb git -c checkout.streamFilterOutput=$mode \
-				checkout -- expand-$size.r) &&
-			test $(wc -c <expand-$size.r) = $size &&
+				checkout -- $file) &&
+			test $(wc -c <$file) = $size &&
+			# Do not leave a racily clean file for the next
+			# command to re-hash.
+			rm $file &&
 			echo "stream=$mode: $kb KiB" &&
 			if test $mode = true
 			then
@@ -283,11 +343,18 @@ check_rss () {
 }
 
 test_expect_success TIME_RSS 'peak memory is bounded when streaming' '
-	check_rss $((100 * 1024 * 1024)) $((50 * 1024))
+	size=$((100 * 1024 * 1024)) &&
+	check_rss expand-$size.r $size $((50 * 1024))
+'
+
+test_expect_success TIME_RSS 'peak memory is bounded for single-file filters' '
+	size=$((100 * 1024 * 1024)) &&
+	check_rss zeros-$size.z $size $((50 * 1024))
 '
 
 test_expect_success TIME_RSS,EXPENSIVE 'peak memory is bounded for multi-GB output' '
-	check_rss $((2 * 1024 * 1024 * 1024)) $((64 * 1024))
+	size=$((2 * 1024 * 1024 * 1024)) &&
+	check_rss expand-$size.r $size $((64 * 1024))
 '
 
 test_done
