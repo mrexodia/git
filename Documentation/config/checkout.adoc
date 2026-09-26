@@ -59,4 +59,4 @@ both `filter.<driver>.smudge` and `filter.<driver>.process` filters.
 If a filter fails after it has sent part of the content, the partial
 file is removed, and then, as without this setting, either the command
 dies (for a required filter) or the unfiltered content is written. The
-default is false.
+default is true.

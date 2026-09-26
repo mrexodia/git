@@ -158,7 +158,7 @@ static int stream_filter_output_enabled(const struct conv_attrs *ca)
 	if (enabled < 0 &&
 	    repo_config_get_bool(the_repository, "checkout.streamfilteroutput",
 				 &enabled))
-		enabled = git_env_bool("GIT_TEST_CHECKOUT_STREAM_FILTER_OUTPUT", 0);
+		enabled = git_env_bool("GIT_TEST_CHECKOUT_STREAM_FILTER_OUTPUT", 1);
 
 	if (!enabled)
 		return 0;
