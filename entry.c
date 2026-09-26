@@ -104,6 +104,31 @@ void *read_blob_entry(const struct cache_entry *ce, size_t *size)
 	return NULL;
 }
 
+/*
+ * The content of a delayed path is not sent to the filter again when it
+ * is retried, so if the filter fails at that point, nothing unfiltered
+ * has been read that we could fall back to. Produce it now, applying all
+ * conversions but the filter, as the first attempt would have.
+ */
+static char *read_unfiltered_blob_entry(const struct cache_entry *ce,
+					const struct conv_attrs *ca,
+					size_t *size)
+{
+	struct conv_attrs ca_nofilter = *ca;
+	struct strbuf buf = STRBUF_INIT;
+	char *blob = read_blob_entry(ce, size);
+
+	if (!blob)
+		return NULL;
+	ca_nofilter.drv = NULL;
+	if (convert_to_working_tree_ca(&ca_nofilter, ce->name, blob, *size,
+				       &buf, NULL)) {
+		free(blob);
+		blob = strbuf_detach(&buf, size);
+	}
+	return blob;
+}
+
 static int open_output_fd(char *path, const struct cache_entry *ce, int to_tempfile)
 {
 	int symlink = (ce->ce_mode & S_IFMT) != S_IFREG;
@@ -481,8 +506,16 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 			 * The filter failed and is not required; write out
 			 * the unfiltered content, as the buffered path does.
 			 */
-			new_blob = strbuf_detach(&buf, &newsize);
-			size = newsize;
+			if (dco && dco->state == CE_RETRY) {
+				strbuf_release(&buf);
+				new_blob = read_unfiltered_blob_entry(ce, ca, &size);
+				if (!new_blob)
+					return error("unable to read sha1 file of %s (%s)",
+						     ce->name, oid_to_hex(&ce->oid));
+			} else {
+				new_blob = strbuf_detach(&buf, &newsize);
+				size = newsize;
+			}
 			goto write_file_entry;
 		}
 
@@ -512,6 +545,13 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 			free(new_blob);
 			new_blob = strbuf_detach(&buf, &newsize);
 			size = newsize;
+		} else if (dco && dco->state == CE_RETRY) {
+			/* new_blob is NULL here; see the top of this case. */
+			strbuf_release(&buf);
+			new_blob = read_unfiltered_blob_entry(ce, ca, &size);
+			if (!new_blob)
+				return error("unable to read sha1 file of %s (%s)",
+					     ce->name, oid_to_hex(&ce->oid));
 		}
 		/*
 		 * No "else" here as errors from convert are OK at this

@@ -165,6 +165,24 @@ do
 		)
 	'
 
+	test_expect_success "filter failing when a delayed path is retried (stream=$mode)" '
+		test_when_finished "rm -rf delayed" &&
+		git clone -q --no-checkout . delayed &&
+		(
+			cd delayed &&
+			git config filter.special.process \
+				"test-tool rot13-filter --always-delay --log=special.log clean smudge delay" &&
+			git -c checkout.streamFilterOutput=$mode \
+				checkout -q main -- .gitattributes abort-after-content.r later.r &&
+			grep "abort-after-content.r.*\[DELAYED\]" special.log &&
+			grep "later.r.*\[DELAYED\]" special.log &&
+			grep "OUT: .*\[ABORT\]" special.log &&
+			# Neither path gets filtered, so both hold the blob.
+			test_cmp_bin ../raw-abort-after-content.r abort-after-content.r &&
+			test_cmp_bin ../raw-later.r later.r
+		)
+	'
+
 	test_expect_success "commands that write the working tree (stream=$mode)" '
 		test_when_finished "rm -rf cmds" &&
 		git init -q cmds &&
