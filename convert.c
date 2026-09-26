@@ -697,8 +697,26 @@ static int filter_buffer_or_fd(int in UNUSED, int out, void *data)
 	return (write_err || status);
 }
 
+/*
+ * Adapter between read_packetized_to_sink() style callbacks and a
+ * struct conv_sink. Once the sink has failed it is not written to again.
+ */
+static int conv_sink_write(void *data, const char *buf, size_t len)
+{
+	struct conv_sink *sink = data;
+
+	if (sink->failed)
+		return -1;
+	if (sink->write(sink, buf, len)) {
+		sink->failed = 1;
+		return -1;
+	}
+	return 0;
+}
+
 static int apply_single_file_filter(const char *path, const char *src, size_t len, int fd,
-				    struct strbuf *dst, const char *cmd)
+				    struct strbuf *dst, struct conv_sink *sink,
+				    const char *cmd)
 {
 	/*
 	 * Create a pipeline to have the command filter the buffer's
@@ -736,7 +754,10 @@ static int apply_single_file_filter(const char *path, const char *src, size_t le
 	}
 
 	if (!err) {
-		strbuf_swap(dst, &nbuf);
+		if (sink)
+			err = conv_sink_write(sink, nbuf.buf, nbuf.len);
+		else
+			strbuf_swap(dst, &nbuf);
 	}
 	strbuf_release(&nbuf);
 	return !err;
@@ -794,7 +815,8 @@ static void handle_filter_error(const struct strbuf *filter_status,
 }
 
 static int apply_multi_file_filter(const char *path, const char *src, size_t len,
-				   int fd, struct strbuf *dst, const char *cmd,
+				   int fd, struct strbuf *dst,
+				   struct conv_sink *sink, const char *cmd,
 				   const unsigned int wanted_capability,
 				   const struct checkout_metadata *meta,
 				   struct delayed_checkout *dco)
@@ -909,8 +931,19 @@ static int apply_multi_file_filter(const char *path, const char *src, size_t len
 		if (err)
 			goto done;
 
-		err = read_packetized_to_strbuf(process->out, &nbuf,
-						PACKET_READ_GENTLE_ON_EOF) < 0;
+		if (sink) {
+			/*
+			 * A failing sink does not desynchronize the
+			 * stream, so only a read error is fatal here.
+			 */
+			err = read_packetized_to_sink(process->out,
+						      conv_sink_write, sink,
+						      PACKET_READ_GENTLE_ON_EOF) < 0 &&
+			      !sink->failed;
+		} else {
+			err = read_packetized_to_strbuf(process->out, &nbuf,
+							PACKET_READ_GENTLE_ON_EOF) < 0;
+		}
 		if (err)
 			goto done;
 
@@ -919,6 +952,16 @@ static int apply_multi_file_filter(const char *path, const char *src, size_t len
 			goto done;
 
 		err = strcmp(filter_status.buf, "success");
+		if (!err && sink && sink->failed) {
+			/*
+			 * The filter did its job but we could not store
+			 * the result. Treat it like a per-file error so
+			 * that the filter process is kept around.
+			 */
+			strbuf_reset(&filter_status);
+			strbuf_addstr(&filter_status, "error");
+			err = 1;
+		}
 	}
 
 done:
@@ -926,7 +969,7 @@ done:
 
 	if (err)
 		handle_filter_error(&filter_status, entry, wanted_capability);
-	else
+	else if (!sink)
 		strbuf_swap(dst, &nbuf);
 	strbuf_release(&nbuf);
 	strbuf_release(&filter_status);
@@ -994,7 +1037,8 @@ static struct convert_driver {
 } *user_convert, **user_convert_tail;
 
 static int apply_filter(const char *path, const char *src, size_t len,
-			int fd, struct strbuf *dst, struct convert_driver *drv,
+			int fd, struct strbuf *dst, struct conv_sink *sink,
+			struct convert_driver *drv,
 			const unsigned int wanted_capability,
 			const struct checkout_metadata *meta,
 			struct delayed_checkout *dco)
@@ -1013,9 +1057,9 @@ static int apply_filter(const char *path, const char *src, size_t len,
 		cmd = drv->smudge;
 
 	if (cmd && *cmd)
-		return apply_single_file_filter(path, src, len, fd, dst, cmd);
+		return apply_single_file_filter(path, src, len, fd, dst, sink, cmd);
 	else if (drv->process && *drv->process)
-		return apply_multi_file_filter(path, src, len, fd, dst,
+		return apply_multi_file_filter(path, src, len, fd, dst, sink,
 			drv->process, wanted_capability, meta, dco);
 
 	return 0;
@@ -1399,7 +1443,7 @@ int would_convert_to_git_filter_fd(struct index_state *istate, const char *path)
 	if (!ca.drv->required)
 		return 0;
 
-	return apply_filter(path, NULL, 0, -1, NULL, ca.drv, CAP_CLEAN, NULL, NULL);
+	return apply_filter(path, NULL, 0, -1, NULL, NULL, ca.drv, CAP_CLEAN, NULL, NULL);
 }
 
 const char *get_convert_attr_ascii(struct index_state *istate, const char *path)
@@ -1437,7 +1481,7 @@ int convert_to_git(struct index_state *istate,
 
 	convert_attrs(istate, &ca, path);
 
-	ret |= apply_filter(path, src, len, -1, dst, ca.drv, CAP_CLEAN, NULL, NULL);
+	ret |= apply_filter(path, src, len, -1, dst, NULL, ca.drv, CAP_CLEAN, NULL, NULL);
 	if (!ret && ca.drv && ca.drv->required)
 		die(_("%s: clean filter '%s' failed"), path, ca.drv->name);
 
@@ -1471,7 +1515,7 @@ void convert_to_git_filter_fd(struct index_state *istate,
 
 	assert(ca.drv);
 
-	if (!apply_filter(path, NULL, 0, fd, dst, ca.drv, CAP_CLEAN, NULL, NULL))
+	if (!apply_filter(path, NULL, 0, fd, dst, NULL, ca.drv, CAP_CLEAN, NULL, NULL))
 		die(_("%s: clean filter '%s' failed"), path, ca.drv->name);
 
 	encode_to_git(path, dst->buf, dst->len, dst, ca.working_tree_encoding, conv_flags);
@@ -1479,14 +1523,20 @@ void convert_to_git_filter_fd(struct index_state *istate,
 	ident_to_git(dst->buf, dst->len, dst, ca.ident);
 }
 
-static int convert_to_working_tree_ca_internal(const struct conv_attrs *ca,
-					       const char *path, const char *src,
-					       size_t len, struct strbuf *dst,
-					       int normalizing,
-					       const struct checkout_metadata *meta,
-					       struct delayed_checkout *dco)
+/*
+ * Apply the working tree conversions that precede the smudge filter.
+ * On return, *src and *len describe the content to be fed to the filter;
+ * they point into dst if any conversion was applied (non-zero return).
+ */
+static int convert_to_working_tree_pre_filter(const struct conv_attrs *ca,
+					      const char *path,
+					      const char **src_p, size_t *len_p,
+					      struct strbuf *dst,
+					      int normalizing)
 {
-	int ret = 0, ret_filter = 0;
+	int ret = 0;
+	const char *src = *src_p;
+	size_t len = *len_p;
 
 	ret |= ident_to_worktree(src, len, dst, ca->ident);
 	if (ret) {
@@ -1512,12 +1562,69 @@ static int convert_to_working_tree_ca_internal(const struct conv_attrs *ca,
 		len = dst->len;
 	}
 
+	*src_p = src;
+	*len_p = len;
+	return ret;
+}
+
+static int convert_to_working_tree_ca_internal(const struct conv_attrs *ca,
+					       const char *path, const char *src,
+					       size_t len, struct strbuf *dst,
+					       int normalizing,
+					       const struct checkout_metadata *meta,
+					       struct delayed_checkout *dco)
+{
+	int ret = 0, ret_filter = 0;
+
+	ret = convert_to_working_tree_pre_filter(ca, path, &src, &len, dst,
+						 normalizing);
+
+	/*
+	 * The smudge filter must remain the last conversion; the
+	 * streaming variant below relies on its output being final.
+	 */
 	ret_filter = apply_filter(
-		path, src, len, -1, dst, ca->drv, CAP_SMUDGE, meta, dco);
+		path, src, len, -1, dst, NULL, ca->drv, CAP_SMUDGE, meta, dco);
 	if (!ret_filter && ca->drv && ca->drv->required)
 		die(_("%s: smudge filter %s failed"), path, ca->drv->name);
 
 	return ret | ret_filter;
+}
+
+int convert_to_working_tree_ca_sink(const struct conv_attrs *ca,
+				    const char *path, const char *src,
+				    size_t len, struct strbuf *dst,
+				    struct conv_sink *sink,
+				    const struct checkout_metadata *meta,
+				    void *dco)
+{
+	int ret, ret_filter;
+	enum conv_attrs_classification c = classify_conv_attrs(ca);
+
+	if (c != CA_CLASS_INCORE_PROCESS && c != CA_CLASS_INCORE_FILTER)
+		BUG("convert_to_working_tree_ca_sink() called without a filter");
+	if (dst->len)
+		BUG("convert_to_working_tree_ca_sink() needs an empty dst");
+
+	sink->failed = 0;
+	ret = convert_to_working_tree_pre_filter(ca, path, &src, &len, dst, 0);
+
+	ret_filter = apply_filter(path, src, len, -1, dst, sink, ca->drv,
+				  CAP_SMUDGE, meta, dco);
+	if (ret_filter && !sink->failed)
+		return 1;
+
+	sink->discard(sink);
+	if (!sink->failed && ca->drv->required)
+		die(_("%s: smudge filter %s failed"), path, ca->drv->name);
+
+	/*
+	 * Leave the unfiltered content in dst for the caller to fall back
+	 * to, as convert_to_working_tree_ca() would have returned it.
+	 */
+	if (!ret && len)
+		strbuf_add(dst, src, len);
+	return 0;
 }
 
 int async_convert_to_working_tree_ca(const struct conv_attrs *ca,

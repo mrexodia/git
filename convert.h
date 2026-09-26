@@ -112,6 +112,59 @@ int async_convert_to_working_tree_ca(const struct conv_attrs *ca,
 				     size_t len, struct strbuf *dst,
 				     const struct checkout_metadata *meta,
 				     void *dco);
+
+/*
+ * A destination for smudge filter output that is written as it is
+ * produced, rather than collected in a strbuf. The owner of the sink
+ * (e.g. the checkout code) is responsible for the underlying resource;
+ * convert.c only calls the callbacks below.
+ */
+struct conv_sink {
+	/* Returns 0 on success, or -1 on error (errno set). */
+	int (*write)(struct conv_sink *sink, const char *buf, size_t len);
+	/*
+	 * Throws away anything written so far. Called before dying
+	 * because a required filter failed; may also be called by the
+	 * owner, so it must be idempotent.
+	 */
+	void (*discard)(struct conv_sink *sink);
+	/*
+	 * Set by convert.c when write() has failed. No further write()
+	 * calls are made after that.
+	 */
+	int failed;
+};
+
+/*
+ * Like async_convert_to_working_tree_ca(), but the output of the smudge
+ * filter, which is always the last conversion applied, is passed to `sink`
+ * instead of being returned in a strbuf. The conversions that precede it
+ * are still done in memory, and their result is what gets fed to the
+ * filter.
+ *
+ * Returns 1 if the filter succeeded, in which case its output has been
+ * written to `sink`, or the path was delayed: nothing has been written
+ * and the path is in dco->paths, as with the non-streaming variant.
+ *
+ * Returns 0 if the filter or the sink failed. The sink may then contain
+ * partial output, which the caller must discard. If the filter itself
+ * failed and it is required, the sink is discarded and we die(), just like
+ * convert_to_working_tree_ca() does. Otherwise `dst` is left holding the
+ * content convert_to_working_tree_ca() would have produced for this
+ * failure, i.e. the unfiltered content, so the caller can write it out
+ * instead. If sink->failed is set the failure was the sink's, and the
+ * caller should treat it as an I/O error.
+ *
+ * Only valid when classify_conv_attrs(ca) is CA_CLASS_INCORE_PROCESS or
+ * CA_CLASS_INCORE_FILTER. `dst` must be empty on entry.
+ */
+int convert_to_working_tree_ca_sink(const struct conv_attrs *ca,
+				    const char *path, const char *src,
+				    size_t len, struct strbuf *dst,
+				    struct conv_sink *sink,
+				    const struct checkout_metadata *meta,
+				    void *dco);
+
 static inline int convert_to_working_tree(struct index_state *istate,
 					  const char *path, const char *src,
 					  size_t len, struct strbuf *dst,
