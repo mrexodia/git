@@ -1,6 +1,7 @@
 #define USE_THE_REPOSITORY_VARIABLE
 
 #include "git-compat-util.h"
+#include "config.h"
 #include "odb.h"
 #include "odb/streaming.h"
 #include "dir.h"
@@ -144,6 +145,73 @@ static int streaming_write_entry(const struct cache_entry *ce, char *path,
 	if (result)
 		unlink(path);
 	return result;
+}
+
+/*
+ * Whether smudge filter output should be written to the working tree as
+ * it is produced, instead of being collected in memory first.
+ */
+static int stream_filter_output_enabled(const struct conv_attrs *ca)
+{
+	static int enabled = -1;
+
+	if (enabled < 0 &&
+	    repo_config_get_bool(the_repository, "checkout.streamfilteroutput",
+				 &enabled))
+		enabled = git_env_bool("GIT_TEST_CHECKOUT_STREAM_FILTER_OUTPUT", 0);
+
+	return enabled && classify_conv_attrs(ca) == CA_CLASS_INCORE_PROCESS;
+}
+
+/*
+ * A conv_sink that writes to a checkout destination. The file is only
+ * created once the filter produces output, so a delayed or failed
+ * response never leaves an empty file behind.
+ */
+struct worktree_sink {
+	struct conv_sink base;
+	const struct cache_entry *ce;
+	char *path;
+	int to_tempfile;
+	int fd;
+	int open_failed;
+	int saved_errno;
+};
+
+static int worktree_sink_open(struct worktree_sink *ws)
+{
+	ws->fd = open_output_fd(ws->path, ws->ce, ws->to_tempfile);
+	if (ws->fd < 0) {
+		ws->open_failed = 1;
+		ws->saved_errno = errno;
+		return -1;
+	}
+	return 0;
+}
+
+static int worktree_sink_write(struct conv_sink *sink, const char *buf,
+			       size_t len)
+{
+	struct worktree_sink *ws = container_of(sink, struct worktree_sink, base);
+
+	if (ws->fd < 0 && worktree_sink_open(ws))
+		return -1;
+	if (write_in_full(ws->fd, buf, len) < 0) {
+		ws->saved_errno = errno;
+		return -1;
+	}
+	return 0;
+}
+
+static void worktree_sink_discard(struct conv_sink *sink)
+{
+	struct worktree_sink *ws = container_of(sink, struct worktree_sink, base);
+
+	if (ws->fd < 0)
+		return;
+	close(ws->fd);
+	ws->fd = -1;
+	unlink(ws->path);
 }
 
 void enable_delayed_checkout(struct checkout *state)
@@ -341,6 +409,72 @@ static int write_entry(struct cache_entry *ce, char *path, struct conv_attrs *ca
 			if (!new_blob)
 				return error("unable to read sha1 file of %s (%s)",
 					     ce->name, oid_to_hex(&ce->oid));
+		}
+
+		if (stream_filter_output_enabled(ca)) {
+			struct worktree_sink ws = {
+				.base = {
+					.write = worktree_sink_write,
+					.discard = worktree_sink_discard,
+				},
+				.ce = ce,
+				.path = path,
+				.to_tempfile = to_tempfile,
+				.fd = -1,
+			};
+			int can_delay = dco && dco->state != CE_NO_DELAY;
+
+			ret = convert_to_working_tree_ca_sink(ca, ce->name,
+							      new_blob, size,
+							      &buf, &ws.base, &meta,
+							      can_delay ? dco : NULL);
+			free(new_blob);
+			if (ret && can_delay) {
+				struct string_list_item *item =
+					string_list_lookup(&dco->paths, ce->name);
+				if (item) {
+					if (ws.fd >= 0)
+						BUG("delayed path '%s' was written to",
+						    ce->name);
+					item->util = nr_checkouts ? nr_checkouts
+							: &scratch_nr_checkouts;
+					goto delayed;
+				}
+			}
+
+			if (ret) {
+				/* The filter may legitimately produce nothing. */
+				if (ws.fd < 0 && worktree_sink_open(&ws)) {
+					errno = ws.saved_errno;
+					return error_errno("unable to create file %s", path);
+				}
+				if (!to_tempfile)
+					fstat_done = fstat_checkout_output(ws.fd, state, &st);
+				if (close(ws.fd)) {
+					int saved_errno = errno;
+					unlink(path);
+					errno = saved_errno;
+					return error_errno("unable to write file %s", path);
+				}
+				break;
+			}
+
+			/* Any partial output has been discarded already. */
+			if (ws.base.failed) {
+				strbuf_release(&buf);
+				errno = ws.saved_errno;
+				if (ws.open_failed)
+					return error_errno("unable to create file %s", path);
+				return error_errno("unable to write file %s", path);
+			}
+
+			/*
+			 * The filter failed and is not required; write out
+			 * the unfiltered content, as the buffered path does.
+			 */
+			new_blob = strbuf_detach(&buf, &newsize);
+			size = newsize;
+			goto write_file_entry;
 		}
 
 		/*

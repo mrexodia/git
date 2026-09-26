@@ -34,6 +34,17 @@
  * (7) If data with the pathname "invalid-delay.a" is processed that the
  *     filter will add the path "unfiltered" which was not delayed before
  *     to the "list_available_blobs" response.
+ * (8) If data with the pathname "error-after-content.r" or
+ *     "abort-after-content.r" is processed with a "smudge" operation
+ *     then the filter sends the full content, followed by a trailing
+ *     "error" or "abort" status, respectively.
+ * (9) If data with the pathname "die-mid-stream.r" is processed with a
+ *     "smudge" operation then the filter sends the first packet of the
+ *     content and then dies without a flush packet.
+ * (10) If data with a pathname of the form "expand-<n>.r" is processed
+ *     with a "smudge" operation then the filter ignores the input and
+ *     responds with <n> bytes of generated content, without holding it
+ *     in memory.
  */
 
 #include "test-tool.h"
@@ -284,6 +295,39 @@ static void command_loop(void)
 				die("%s write error", command);
 			}
 
+			if (!strcmp(command, "smudge") &&
+			    skip_prefix(pathname, "expand-", &p)) {
+				char *end;
+				uintmax_t n = strtoumax(p, &end, 10);
+				char chunk[LARGE_PACKET_DATA_MAX];
+
+				if (strcmp(end, ".r"))
+					die("bad expand path '%s'", pathname);
+				fprintf(logfile, "OUT: %"PRIuMAX" [EXPAND] [OK]\n", n);
+				for (i = 0; i < (int)sizeof(chunk); i++)
+					chunk[i] = 'a' + i % 26;
+				while (n) {
+					size_t len = n < sizeof(chunk) ? n : sizeof(chunk);
+					packet_write(1, chunk, len);
+					n -= len;
+				}
+				packet_flush(1);
+				packet_flush(1);
+				goto next;
+			}
+
+			if (!strcmp(command, "smudge") &&
+			    !strcmp(pathname, "die-mid-stream.r")) {
+				output_len = strlen(output);
+				if (output_len > LARGE_PACKET_DATA_MAX)
+					output_len = LARGE_PACKET_DATA_MAX;
+				packet_write(1, output, output_len);
+				fprintf(logfile, "OUT: %"PRIuMAX" [DIE]\n",
+					(uintmax_t)output_len);
+				fclose(logfile);
+				exit(1);
+			}
+
 			output_len = strlen(output);
 			fprintf(logfile, "OUT: %"PRIuMAX" ", (uintmax_t)output_len);
 
@@ -294,10 +338,21 @@ static void command_loop(void)
 
 			for (i = 0; i < nr_packets; i++)
 				fprintf(logfile, ".");
-			fprintf(logfile, " [OK]\n");
 
+			if (!strcmp(command, "smudge") &&
+			    (!strcmp(pathname, "error-after-content.r") ||
+			     !strcmp(pathname, "abort-after-content.r"))) {
+				int is_error = pathname[0] == 'e';
+				fprintf(logfile, " %s\n",
+					is_error ? "[ERROR]" : "[ABORT]");
+				packet_write_fmt(1, "status=%s",
+						 is_error ? "error" : "abort");
+			} else {
+				fprintf(logfile, " [OK]\n");
+			}
 			packet_flush(1);
 		}
+next:
 		free(pathname);
 		strbuf_release(&input);
 		free(command);

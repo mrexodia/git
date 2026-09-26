@@ -42,3 +42,21 @@ well the parallel version performs.
 	the parallelization gains. This setting allows you to define the minimum
 	number of files for which parallel checkout should be attempted. The
 	default is 100.
+
+`checkout.streamFilterOutput`::
+	If set to true, the output of a smudge filter (see
+	linkgit:gitattributes[5]) is written to the working tree file as it
+	is received, instead of being collected in memory first. This keeps
+	the memory needed to check out a filtered file independent of its
+	size, which matters for filters that produce very large files. The
+	filter protocol is unchanged and existing filters work as they are.
++
+Only working tree writes done by checkout-like commands (e.g. checkout,
+switch, restore, reset, clone, checkout-index, merge) are affected;
+other users of smudge filters, such as `git cat-file --filters`,
+`git archive` or `git apply`, still buffer the output. Currently only
+long-running process filters (`filter.<driver>.process`) are streamed.
+If a filter fails after it has sent part of the content, the partial
+file is removed, and then, as without this setting, either the command
+dies (for a required filter) or the unfiltered content is written. The
+default is false.

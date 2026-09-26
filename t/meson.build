@@ -283,6 +283,7 @@ integration_tests = [
   't2080-parallel-checkout-basics.sh',
   't2081-parallel-checkout-collisions.sh',
   't2082-parallel-checkout-attributes.sh',
+  't2090-stream-filter-output.sh',
   't2100-update-cache-badpath.sh',
   't2101-update-index-reupdate.sh',
   't2102-update-index-symlinks.sh',
