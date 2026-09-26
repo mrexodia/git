@@ -148,6 +148,21 @@ int packet_read_line_gently(int fd, int *size, char **dst_line);
 ssize_t read_packetized_to_strbuf(int fd_in, struct strbuf *sb_out, int options);
 
 /*
+ * Reads a stream of variable sized packets until a flush packet is detected,
+ * handing the payload of each packet to `sink_fn` as it arrives instead of
+ * accumulating it in memory.
+ *
+ * Returns the number of bytes read on success, or -1 on truncated input or
+ * a read error (the stream is then out of sync). If `sink_fn` returns
+ * non-zero, it is not called again, the remaining packets are read and
+ * discarded up to the flush packet, and -2 is returned; the stream is
+ * still in sync in that case.
+ */
+typedef int (*packet_sink_fn)(void *data, const char *buf, size_t len);
+ssize_t read_packetized_to_sink(int fd_in, packet_sink_fn sink_fn, void *data,
+				int options);
+
+/*
  * Receive multiplexed output stream over git native protocol.
  * in_stream is the input stream from the remote, which carries data
  * in pkt_line format with band designator.  Demultiplex it into out

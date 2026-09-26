@@ -575,6 +575,29 @@ ssize_t read_packetized_to_strbuf(int fd_in, struct strbuf *sb_out, int options)
 	return sb_out->len - orig_len;
 }
 
+ssize_t read_packetized_to_sink(int fd_in, packet_sink_fn sink_fn, void *data,
+				int options)
+{
+	char buf[LARGE_PACKET_DATA_MAX + 1];
+	int packet_len, sink_failed = 0;
+	size_t total = 0;
+
+	for (;;) {
+		packet_len = packet_read(fd_in, buf, sizeof(buf), options);
+		if (packet_len <= 0)
+			break;
+		total += packet_len;
+		if (!sink_failed && sink_fn(data, buf, packet_len))
+			sink_failed = 1;
+	}
+
+	if (packet_len < 0)
+		return packet_len;
+	if (sink_failed)
+		return -2;
+	return total;
+}
+
 int recv_sideband(const char *me, int in_stream, int out)
 {
 	char buf[LARGE_PACKET_MAX + 1];
